@@ -98,15 +98,21 @@ async function collectNews() {
   const start = yesterday.toISOString().split('T')[0];
   const end = today.toISOString().split('T')[0];
 
+  let allNews = [];
+
   for (const company of companies) {
     try {
       const news = await searchNaverNews(company, start, end);
       if (news.length > 0) {
-        await sendToJandi(company, news);
+        allNews.push({ company, news });
       }
     } catch (error) {
       console.error(`Error collecting news for ${company}:`, error);
     }
+  }
+
+  if (allNews.length > 0) {
+    await sendToJandi(allNews);
   }
 }
 
@@ -128,30 +134,32 @@ async function searchNaverNews(company, start, end) {
   });
 }
 
-async function sendToJandi(company, news) {
-  const message = formatJandiMessage(company, news);
+async function sendToJandi(allNews) {
+  const message = formatJandiMessage(allNews);
   
   try {
     await axios.post(JANDI_WEBHOOK_URL, {
       body: message,
       connectColor: '#FAC11B',
       connectInfo: [{
-        title: '네이버 뉴스 검색 결과',
-        description: `${company}에 대한 최근 뉴스입니다.`
+        title: '투자사 관련 뉴스 모음',
+        description: '최근 24시간 동안의 투자사 관련 뉴스입니다.'
       }]
     });
   } catch (error) {
-    console.error(`Error sending message to Jandi for ${company}:`, error);
+    console.error('Error sending message to Jandi:', error);
     throw error;
   }
 }
 
-function formatJandiMessage(company, news) {
-  let message = `# ${company} 관련 뉴스\n\n`;
+function formatJandiMessage(allNews) {
+  let message = '# 투자사 관련 뉴스 모음\n\n';
   
-  news.forEach((item, index) => {
-    const title = item.title.replace(/<[^>]*>/g, '');
-    message += `${index + 1}. [${title}](${item.link})\n`;
+  allNews.forEach(({ company, news }) => {
+    news.forEach(item => {
+      const title = item.title.replace(/<[^>]*>/g, '');
+      message += `**[${company}]**, **${title}**, ${item.link}\n`;
+    });
   });
   
   return message;
