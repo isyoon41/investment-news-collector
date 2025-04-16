@@ -91,37 +91,22 @@ exports.handler = async function(event, context) {
 };
 
 async function collectNews() {
-  console.log('Starting news collection...');
   const today = new Date();
   const yesterday = new Date(today);
   yesterday.setDate(today.getDate() - 1);
 
   const start = yesterday.toISOString().split('T')[0];
   const end = today.toISOString().split('T')[0];
-  console.log(`Collecting news from ${start} to ${end}`);
-
-  let allNews = [];
 
   for (const company of companies) {
     try {
-      console.log(`Searching news for ${company}...`);
       const news = await searchNaverNews(company, start, end);
       if (news.length > 0) {
-        console.log(`Found ${news.length} news items for ${company}`);
-        allNews.push({ company, news });
+        await sendToJandi(company, news);
       }
     } catch (error) {
       console.error(`Error collecting news for ${company}:`, error);
     }
-  }
-
-  console.log(`Total companies with news: ${allNews.length}`);
-  if (allNews.length > 0) {
-    console.log('Sending news to Jandi...');
-    await sendToJandi(allNews);
-    console.log('News sent to Jandi successfully');
-  } else {
-    console.log('No news found for any company');
   }
 }
 
@@ -143,35 +128,30 @@ async function searchNaverNews(company, start, end) {
   });
 }
 
-async function sendToJandi(allNews) {
-  const message = formatJandiMessage(allNews);
-  console.log('Formatted message:', message);
+async function sendToJandi(company, news) {
+  const message = formatJandiMessage(company, news);
   
   try {
-    console.log('Sending message to Jandi webhook...');
-    const response = await axios.post(JANDI_WEBHOOK_URL, {
+    await axios.post(JANDI_WEBHOOK_URL, {
       body: message,
       connectColor: '#FAC11B',
       connectInfo: [{
         title: '투자사 관련 뉴스 모음',
-        description: '최근 24시간 동안의 투자사 관련 뉴스입니다.'
+        description: `${company} 관련 최근 뉴스입니다.`
       }]
     });
-    console.log('Jandi webhook response:', response.status, response.statusText);
   } catch (error) {
-    console.error('Error sending message to Jandi:', error.response ? error.response.data : error.message);
+    console.error(`Error sending message to Jandi for ${company}:`, error);
     throw error;
   }
 }
 
-function formatJandiMessage(allNews) {
+function formatJandiMessage(company, news) {
   let message = '# 투자사 관련 뉴스 모음\n\n';
   
-  allNews.forEach(({ company, news }) => {
-    news.forEach(item => {
-      const title = item.title.replace(/<[^>]*>/g, '');
-      message += `**[${company}]**, **${title}**, ${item.link}\n`;
-    });
+  news.forEach(item => {
+    const title = item.title.replace(/<[^>]*>/g, '');
+    message += `**[${company}]**, **${title}**, ${item.link}\n`;
   });
   
   return message;
