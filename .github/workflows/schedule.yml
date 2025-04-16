@@ -1,0 +1,14 @@
+name: Daily News Collection
+
+on:
+  schedule:
+    - cron: '0 15 * * *'  # 매일 한국 시간 자정 (UTC+9)
+  workflow_dispatch:  # 수동 실행 가능
+
+jobs:
+  collect-news:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Netlify Function
+        run: |
+          curl -X POST https://guileless-melomakarona-179682.netlify.app/.netlify/functions/collectNews 
