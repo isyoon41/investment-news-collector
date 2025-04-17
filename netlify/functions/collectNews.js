@@ -13,8 +13,7 @@ const companies = [
   '카이젠',
   '폴리페놀팩토리',
   '브이픽스메디칼',
-  'CTX',
-  '임팩트AI',
+  '임팩트에이아이',
   '에코토르',
   '갤럭스',
   '시안솔루션',
@@ -74,6 +73,30 @@ const companies = [
   '아이벡스'
 ];
 
+// 회사별 검색 설정
+const companySearchConfig = {
+  // 기본 검색: 회사명만 사용
+  DEFAULT: {
+    useExactMatch: true,  // 정확한 회사명 매칭 사용
+  },
+  // 특별 검색 설정이 필요한 회사들
+  '초코엔터테인먼트': {
+    searchKeywords: ['초코엔터테인먼트', '초코엔터', '(주)초코엔터테인먼트'],
+    excludeKeywords: ['초코릿', '초코렛', '초콜릿', '초콜렛', '초코과자', '초코파이', '초코케이크'],
+    useExactMatch: true,
+  },
+  '시안솔루션': {
+    searchKeywords: ['시안솔루션', '(주)시안솔루션'],
+    excludeKeywords: ['시안화', '청산가리'],
+    useExactMatch: true,
+  },
+  '에이럭스': {
+    searchKeywords: ['에이럭스', '(주)에이럭스', 'ALUX'],
+    excludeKeywords: [],
+    useExactMatch: true,
+  }
+};
+
 exports.handler = async function(event, context) {
   try {
     await collectNews();
@@ -91,16 +114,22 @@ exports.handler = async function(event, context) {
 };
 
 async function collectNews() {
-  const today = new Date();
-  const yesterday = new Date(today);
-  yesterday.setDate(today.getDate() - 1);
+  const now = new Date();
+  const today8am = new Date(now);
+  today8am.setHours(8, 0, 0, 0);
+  
+  const yesterday8am = new Date(today8am);
+  yesterday8am.setDate(yesterday8am.getDate() - 1);
+  
+  const searchEnd = now < today8am ? yesterday8am : today8am;
+  const searchStart = new Date(searchEnd);
+  searchStart.setDate(searchStart.getDate() - 1);
 
-  const start = yesterday.toISOString().split('T')[0];
-  const end = today.toISOString().split('T')[0];
+  console.log(`Collecting news from ${searchStart.toISOString()} to ${searchEnd.toISOString()}`);
 
   for (const company of companies) {
     try {
-      const news = await searchNaverNews(company, start, end);
+      const news = await searchNaverNews(company, searchStart, searchEnd);
       if (news.length > 0) {
         await sendToJandi(company, news);
       }
@@ -110,21 +139,78 @@ async function collectNews() {
   }
 }
 
-async function searchNaverNews(company, start, end) {
-  const query = encodeURI(company);
-  const url = `https://openapi.naver.com/v1/search/news.json?query=${query}&display=100&sort=date&start=1`;
+async function searchNaverNews(company, startDate, endDate) {
+  // 회사별 검색 설정 가져오기
+  const searchConfig = companySearchConfig[company] || companySearchConfig.DEFAULT;
+  const searchKeywords = searchConfig.searchKeywords || [company];
+  const excludeKeywords = searchConfig.excludeKeywords || [];
+  
+  // 모든 검색 키워드에 대한 결과를 수집
+  let allResults = [];
+  for (const keyword of searchKeywords) {
+    const query = encodeURI(`"${keyword}"`);
+    const url = `https://openapi.naver.com/v1/search/news.json?query=${query}&display=100&sort=date&start=1`;
 
-  const response = await axios.get(url, {
-    headers: {
-      'X-Naver-Client-Id': NAVER_CLIENT_ID,
-      'X-Naver-Client-Secret': NAVER_CLIENT_SECRET
+    try {
+      const response = await axios.get(url, {
+        headers: {
+          'X-Naver-Client-Id': NAVER_CLIENT_ID,
+          'X-Naver-Client-Secret': NAVER_CLIENT_SECRET
+        }
+      });
+
+      allResults = allResults.concat(response.data.items);
+    } catch (error) {
+      console.error(`Error searching for keyword ${keyword}:`, error);
     }
-  });
+  }
 
-  return response.data.items.filter(item => {
+  // 중복 제거 (동일한 기사가 다른 키워드로 검색될 수 있음)
+  const uniqueResults = Array.from(new Set(allResults.map(item => item.link)))
+    .map(link => allResults.find(item => item.link === link));
+
+  return uniqueResults.filter(item => {
     const pubDate = new Date(item.pubDate);
-    const pubDateStr = pubDate.toISOString().split('T')[0];
-    return pubDateStr >= start && pubDateStr <= end;
+    
+    // HTML 태그 제거 및 텍스트 정제
+    const cleanTitle = item.title.replace(/<[^>]*>/g, '').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+    const cleanDescription = item.description.replace(/<[^>]*>/g, '').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+    
+    // 제외 키워드 확인
+    const hasExcludedKeyword = excludeKeywords.some(keyword => 
+      cleanTitle.includes(keyword) || cleanDescription.includes(keyword)
+    );
+    
+    if (hasExcludedKeyword) {
+      return false;
+    }
+
+    // 정확한 매칭이 필요한 경우
+    if (searchConfig.useExactMatch) {
+      const exactMatchPattern = new RegExp(
+        `(^|[\\s\\(\\[\\{]|[^가-힣\\w])(${searchKeywords.join('|')})($|[\\s\\)\\]\\}]|[^가-힣\\w])`,
+        'g'
+      );
+      
+      const titleMatches = cleanTitle.match(exactMatchPattern);
+      const descriptionMatches = cleanDescription.match(exactMatchPattern);
+      
+      const isValidMatch = (titleMatches || descriptionMatches) && pubDate >= startDate && pubDate < endDate;
+      
+      if (isValidMatch) {
+        console.log(`Matched news for ${company}:`, {
+          title: cleanTitle,
+          description: cleanDescription,
+          date: pubDate,
+          matchedKeywords: titleMatches || descriptionMatches
+        });
+      }
+      
+      return isValidMatch;
+    }
+    
+    // 날짜 범위 확인
+    return pubDate >= startDate && pubDate < endDate;
   });
 }
 
@@ -136,7 +222,7 @@ async function sendToJandi(company, news) {
       body: message,
       connectColor: '#FAC11B',
       connectInfo: [{
-        title: '투자사 관련 뉴스 모음',
+        title: '패스웨이 포트폴리오사 관련 뉴스',
         description: `${company} 관련 최근 뉴스입니다.`
       }]
     });
@@ -147,11 +233,13 @@ async function sendToJandi(company, news) {
 }
 
 function formatJandiMessage(company, news) {
-  let message = '# 투자사 관련 뉴스 모음\n\n';
+  let message = '# 패스웨이 포트폴리오사 관련 뉴스\n\n';
   
   news.forEach(item => {
-    const title = item.title.replace(/<[^>]*>/g, '');
+    const title = item.title.replace(/<[^>]*>/g, '').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+    const description = item.description.replace(/<[^>]*>/g, '').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
     message += `**[${company}]**, **${title}**, ${item.link}\n`;
+    message += `> ${description}\n\n`;
   });
   
   return message;

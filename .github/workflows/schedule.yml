@@ -2,7 +2,7 @@ name: Daily News Collection
 
 on:
   schedule:
-    - cron: '0 15 * * *'  # 매일 한국 시간 자정 (UTC+9)
+    - cron: '0 23 * * *'  # 매일 한국 시간 오전 8시 (UTC+9)
   workflow_dispatch:  # 수동 실행 가능
 
 jobs:
