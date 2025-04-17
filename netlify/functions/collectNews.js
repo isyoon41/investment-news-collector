@@ -3,7 +3,7 @@ const axios = require('axios');
 // 환경 변수 설정
 const NAVER_CLIENT_ID = process.env.NAVER_CLIENT_ID;
 const NAVER_CLIENT_SECRET = process.env.NAVER_CLIENT_SECRET;
-const JANDI_WEBHOOK_URL = process.env.JANDI_WEBHOOK_URL;
+const JANDI_WEBHOOK_URL = 'https://wh.jandi.com/connect-api/webhook/28517436/c45a988a7dc3a51e7ff4a63fdd49b37a';
 
 // axios 기본 설정
 const axiosInstance = axios.create({
