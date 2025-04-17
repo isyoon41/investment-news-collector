@@ -7,7 +7,7 @@ const JANDI_WEBHOOK_URL = process.env.JANDI_WEBHOOK_URL;
 
 // axios 기본 설정
 const axiosInstance = axios.create({
-  timeout: 10000, // 10초 타임아웃
+  timeout: 5000, // 5초 타임아웃으로 줄임
   headers: {
     'X-Naver-Client-Id': NAVER_CLIENT_ID,
     'X-Naver-Client-Secret': NAVER_CLIENT_SECRET
@@ -107,6 +107,9 @@ const companySearchConfig = {
 };
 
 exports.handler = async function(event, context) {
+  // Lambda 함수 제한시간 설정
+  context.callbackWaitsForEmptyEventLoop = false;
+  
   try {
     console.log('Starting news collection...');
     await collectNews();
@@ -142,8 +145,8 @@ async function collectNews() {
 
   console.log(`Collecting news from ${searchStart.toISOString()} to ${searchEnd.toISOString()}`);
 
-  // 회사별 뉴스 수집을 10개씩 나누어 처리
-  const chunkSize = 10;
+  // 회사별 뉴스 수집을 5개씩 나누어 처리 (병렬 처리 수 줄임)
+  const chunkSize = 5;
   for (let i = 0; i < companies.length; i += chunkSize) {
     const chunk = companies.slice(i, i + chunkSize);
     await Promise.all(
@@ -155,7 +158,7 @@ async function collectNews() {
 async function processCompanyNews(company, startDate, endDate) {
   try {
     const news = await searchNaverNews(company, startDate, endDate);
-    if (news.length > 0) {
+    if (news && news.length > 0) {
       await sendToJandi(company, news);
       console.log(`Successfully sent ${news.length} news items for ${company}`);
     }
@@ -169,76 +172,67 @@ async function searchNaverNews(company, startDate, endDate) {
   const searchKeywords = searchConfig.searchKeywords || [company];
   const excludeKeywords = searchConfig.excludeKeywords || [];
   
-  let allResults = [];
-  
   try {
-    // 키워드별 검색을 병렬로 처리
-    const searchPromises = searchKeywords.map(async keyword => {
+    // 각 키워드별로 순차적으로 처리 (병렬 처리 제거)
+    let allResults = [];
+    for (const keyword of searchKeywords) {
       try {
         const query = encodeURI(`"${keyword}"`);
-        const url = `https://openapi.naver.com/v1/search/news.json?query=${query}&display=100&sort=date&start=1`;
+        const url = `https://openapi.naver.com/v1/search/news.json?query=${query}&display=50&sort=date&start=1`; // 결과 수를 50개로 제한
+
         const response = await axiosInstance.get(url);
-        return response.data.items || [];
+        if (response.data && response.data.items) {
+          allResults = allResults.concat(response.data.items);
+        }
       } catch (error) {
         console.error(`Error searching for keyword ${keyword}:`, error.message);
-        return [];
+        continue;
       }
-    });
+    }
 
-    const results = await Promise.all(searchPromises);
-    allResults = results.flat();
+    // 중복 제거 및 필터링
+    const uniqueResults = Array.from(new Set(allResults.map(item => item.link)))
+      .map(link => allResults.find(item => item.link === link))
+      .filter(item => {
+        try {
+          const pubDate = new Date(item.pubDate);
+          if (pubDate < startDate || pubDate >= endDate) return false;
+
+          const cleanTitle = item.title.replace(/<[^>]*>/g, '').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+          const cleanDescription = item.description.replace(/<[^>]*>/g, '').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+          
+          // 제외 키워드 확인
+          if (excludeKeywords.some(keyword => 
+            cleanTitle.includes(keyword) || cleanDescription.includes(keyword)
+          )) return false;
+
+          // 정확한 매칭 확인
+          if (searchConfig.useExactMatch) {
+            const exactMatchPattern = new RegExp(
+              `(^|[\\s\\(\\[\\{]|[^가-힣\\w])(${searchKeywords.join('|')})($|[\\s\\)\\]\\}]|[^가-힣\\w])`,
+              'g'
+            );
+            
+            return exactMatchPattern.test(cleanTitle) || exactMatchPattern.test(cleanDescription);
+          }
+
+          return true;
+        } catch (error) {
+          console.error(`Error processing news item:`, error.message);
+          return false;
+        }
+      });
+
+    return uniqueResults;
   } catch (error) {
     console.error(`Error in searchNaverNews for ${company}:`, error.message);
     return [];
   }
-
-  // 중복 제거 및 필터링
-  const uniqueResults = Array.from(new Set(allResults.map(item => item.link)))
-    .map(link => allResults.find(item => item.link === link));
-
-  return uniqueResults.filter(item => {
-    try {
-      const pubDate = new Date(item.pubDate);
-      const cleanTitle = item.title.replace(/<[^>]*>/g, '').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
-      const cleanDescription = item.description.replace(/<[^>]*>/g, '').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
-      
-      const hasExcludedKeyword = excludeKeywords.some(keyword => 
-        cleanTitle.includes(keyword) || cleanDescription.includes(keyword)
-      );
-      
-      if (hasExcludedKeyword) return false;
-
-      if (searchConfig.useExactMatch) {
-        const exactMatchPattern = new RegExp(
-          `(^|[\\s\\(\\[\\{]|[^가-힣\\w])(${searchKeywords.join('|')})($|[\\s\\)\\]\\}]|[^가-힣\\w])`,
-          'g'
-        );
-        
-        const titleMatches = cleanTitle.match(exactMatchPattern);
-        const descriptionMatches = cleanDescription.match(exactMatchPattern);
-        
-        const isValidMatch = (titleMatches || descriptionMatches) && pubDate >= startDate && pubDate < endDate;
-        
-        if (isValidMatch) {
-          console.log(`Matched news for ${company}:`, {
-            title: cleanTitle,
-            date: pubDate,
-            matchedKeywords: titleMatches || descriptionMatches
-          });
-        }
-        
-        return isValidMatch;
-      }
-      
-      return pubDate >= startDate && pubDate < endDate;
-    } catch (error) {
-      console.error(`Error processing news item for ${company}:`, error.message);
-      return false;
-    }
-  });
 }
 
 async function sendToJandi(company, news) {
+  if (!news || news.length === 0) return;
+
   const message = formatJandiMessage(company, news);
   
   try {
